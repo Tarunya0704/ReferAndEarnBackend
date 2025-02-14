@@ -7,7 +7,12 @@ const cors = require('cors');
 const prisma = new PrismaClient();
 const app = express();
 
-app.use(cors());
+// Middleware
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 app.use(express.json());
 
 // Configure nodemailer
@@ -19,13 +24,40 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK',
+    timestamp: new Date(),
+    service: 'Refer & Earn API',
+    databaseConnection: prisma ? 'Connected' : 'Not Connected'
+  });
+});
+
+// Get all referrals endpoint
+app.get('/api/referrals', async (req, res) => {
+  try {
+    const referrals = await prisma.referral.findMany({
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+    res.json(referrals);
+  } catch (error) {
+    console.error('Error fetching referrals:', error);
+    res.status(500).json({ error: 'Failed to fetch referrals' });
+  }
+});
+
 // POST endpoint for creating a new referral
 app.post('/api/referrals', async (req, res) => {
   try {
     const { referrerName, referrerEmail, refereeName, refereeEmail, course } = req.body;
+    console.log('Received referral request:', { referrerName, referrerEmail, refereeName, refereeEmail, course });
 
     // Validate required fields
     if (!referrerName || !referrerEmail || !refereeName || !refereeEmail || !course) {
+      console.log('Validation failed: Missing required fields');
       return res.status(400).json({ error: 'All fields are required' });
     }
 
@@ -40,6 +72,7 @@ app.post('/api/referrals', async (req, res) => {
         status: 'PENDING'
       },
     });
+    console.log('Referral created:', referral);
 
     // Send email to referee
     const mailOptions = {
@@ -56,6 +89,7 @@ app.post('/api/referrals', async (req, res) => {
     };
 
     await transporter.sendMail(mailOptions);
+    console.log('Email sent successfully to:', refereeEmail);
 
     res.status(201).json({ 
       message: 'Referral created successfully',
@@ -67,7 +101,44 @@ app.post('/api/referrals', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Server startup and database connection test
+const startServer = async () => {
+  try {
+    // Test database connection
+    await prisma.$connect();
+    console.log('✅ Database connection established');
+
+    const PORT = process.env.PORT || 3001;
+    app.listen(PORT, () => {
+      console.log(`
+🚀 Server is running!
+⭐️ Server Details:
+   - Port: ${PORT}
+   - Environment: ${process.env.NODE_ENV || 'development'}
+   - Database: Connected
+   - Email Service: Configured
+
+📝 Available Endpoints:
+   - GET  /health         - Check server status
+   - GET  /api/referrals  - List all referrals
+   - POST /api/referrals  - Create new referral
+
+💡 Try these curl commands to test:
+   curl http://localhost:${PORT}/health
+   curl http://localhost:${PORT}/api/referrals
+      `);
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received. Closing HTTP server and database connection...');
+  await prisma.$disconnect();
+  process.exit(0);
 });
